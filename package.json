@@ -1,0 +1,20 @@
+{
+  "name": "confluence-content-action-ui-kit",
+  "version": "1.1.47-next.7",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "lint": "eslint src/**/*"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "eslint-plugin-react-hooks": "^4.6.0"
+  },
+  "dependencies": {
+    "@forge/bridge": "6.3.0-next.5",
+    "@forge/react": "12.1.2-next.4",
+    "@forge/resolver": "2.0.0",
+    "react": "^18.2.0"
+  }
+}

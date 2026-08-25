@@ -1,0 +1,20 @@
+modules:
+  confluence:contentAction:
+    - key: task-bridge-hello-world-content-action
+      resource: main
+      resolver:
+        function: resolver
+      render: native
+      title: Task Bridge
+  function:
+    - key: resolver
+      handler: index.handler
+resources:
+  - key: main
+    path: src/frontend/index.jsx
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/ca158947-1ec7-4cc1-aa54-fa5da6537739

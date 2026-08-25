@@ -1,0 +1,10 @@
+node_modules/
+dist/
+/.forge/
+.omc/
+.env
+.env.local
+*.log
+.DS_Store
+CLAUDE.local.md
+PLAN.md
