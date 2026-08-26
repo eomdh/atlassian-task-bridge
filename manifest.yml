@@ -17,9 +17,18 @@ permissions:
     # 액션 아이템 조회. 상태 변경 권한은 역방향을 만들 때 추가한다
     - read:task:confluence
     - read:page:confluence
+    # 대상 프로젝트와 이슈 타입 조회. 이슈 생성 권한은 다음 슬라이스에서 추가한다
+    - read:jira-work
 app:
   runtime:
     name: nodejs24.x
     memoryMB: 256
     architecture: arm64
+  # 정확히 하나가 required: true 여야 한다. Confluence 가 주 제품이고 Jira 는 연동 대상이라
+  # Jira 를 optional 로 둔다. Jira 가 없는 사이트에도 설치되므로 화면이 그 상태를 다룬다
+  compatibility:
+    confluence:
+      required: true
+    jira:
+      required: false
   id: ari:cloud:ecosystem::app/ca158947-1ec7-4cc1-aa54-fa5da6537739
