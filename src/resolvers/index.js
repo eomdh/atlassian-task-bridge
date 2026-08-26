@@ -1,6 +1,7 @@
 import Resolver from '@forge/resolver';
 import api, { route } from '@forge/api';
-import { titleFromTask } from '../lib/task-title.js';
+import { titleFromTask, TITLE_MAX_LENGTH } from '../lib/task-title.js';
+import { findManyByTaskId, saveMapping } from '../lib/mapping.js';
 
 const resolver = new Resolver();
 
@@ -65,7 +66,10 @@ resolver.define('getTasks', async (req) => {
     'getTasks'
   );
   if (r.error) {
-    return fail({ pageId, tasks: [], skipped: 0 }, r.error === 'JIRA_UNAVAILABLE' ? 'FORBIDDEN' : r.error);
+    return fail(
+      { pageId, tasks: [], skipped: 0 },
+      r.error === 'JIRA_UNAVAILABLE' ? 'FORBIDDEN' : r.error
+    );
   }
 
   const results = Array.isArray(r.body?.results) ? r.body.results : [];
@@ -77,8 +81,22 @@ resolver.define('getTasks', async (req) => {
     if (title) tasks.push({ id: task.id, title, assignedTo: task.assignedTo ?? null });
   }
 
-  // 조용히 버리면 사용자가 회의록의 개수와 목록의 개수가 다른 이유를 알 수 없다
-  return { pageId, tasks, skipped: results.length - tasks.length, error: null };
+  // 이미 옮긴 항목을 표시해 중복 생성을 줄인다. 막지는 않는다.
+  // 일부러 두 번 만들 이유가 있을 수 있고 앱이 사용자를 막을 만큼의 근거가 없다
+  let mapped = {};
+  try {
+    mapped = await findManyByTaskId(tasks.map((t) => t.id));
+  } catch (e) {
+    // 매핑을 못 읽어도 목록은 보여준다. 중복 표시만 없을 뿐 조회는 성립한다
+    console.log('getTasks mapping lookup failed', String(e));
+  }
+
+  return {
+    pageId,
+    tasks: tasks.map((t) => ({ ...t, issueKey: mapped[t.id]?.issueKey ?? null })),
+    skipped: results.length - tasks.length,
+    error: null,
+  };
 });
 
 resolver.define('getProjects', async () => {
@@ -114,6 +132,115 @@ resolver.define('getIssueTypes', async (req) => {
   // 고르는 규칙은 리졸버에 둔다. 화면은 결과만 표시한다
   const picked = pickIssueType(types);
   return { issueTypeId: picked.id, issueTypeName: picked.name, error: null };
+});
+
+// 이슈 하나를 만든다. 담당자 때문에 거절당하면 담당자를 빼고 한 번 더 시도한다.
+// 회의록에서 멘션된 사람이 그 프로젝트를 못 쓰는 경우가 흔한데, 그때 이슈가 아예
+// 안 만들어지는 것보다 담당자 없이라도 만들어지는 편이 사용자에게 낫다
+async function createIssue({ projectKey, issueTypeId, summary, assignedTo }) {
+  const post = async (withAssignee) => {
+    const fields = {
+      project: { key: projectKey },
+      issuetype: { id: issueTypeId },
+      summary,
+    };
+    if (withAssignee) fields.assignee = { id: assignedTo };
+
+    const res = await api.asUser().requestJira(route`/rest/api/3/issue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ fields }),
+    });
+    return { ok: res.ok, status: res.status, text: await res.text() };
+  };
+
+  try {
+    const first = await post(Boolean(assignedTo));
+    if (first.ok) {
+      return { ok: true, issueKey: JSON.parse(first.text).key, assigneeDropped: false };
+    }
+
+    // 담당자를 넣어서 실패한 경우에만 재시도할 가치가 있다
+    if (assignedTo) {
+      console.log('createIssue with assignee failed', first.status, first.text);
+      const retry = await post(false);
+      if (retry.ok) {
+        return { ok: true, issueKey: JSON.parse(retry.text).key, assigneeDropped: true };
+      }
+      console.log('createIssue without assignee failed', retry.status, retry.text);
+      return { ok: false, reason: 'CREATE_FAILED', detail: retry.text.slice(0, 300) };
+    }
+
+    console.log('createIssue failed', first.status, first.text);
+    return { ok: false, reason: 'CREATE_FAILED', detail: first.text.slice(0, 300) };
+  } catch (e) {
+    console.log('createIssue threw', String(e));
+    return { ok: false, reason: 'CREATE_FAILED', detail: String(e) };
+  }
+}
+
+resolver.define('createIssues', async (req) => {
+  const pageId = req.context?.extension?.content?.id;
+  const { projectKey, issueTypeId, items } = req.payload ?? {};
+  if (!projectKey || !issueTypeId || !Array.isArray(items) || items.length === 0) {
+    return fail({ results: [], created: 0, failed: 0 }, 'BAD_REQUEST');
+  }
+
+  const results = [];
+
+  // 순차로 보낸다. 병렬은 Jira 속도 제한에 걸릴 수 있고, 순서가 입력과 같아야
+  // 화면이 결과를 항목에 짝지을 때 단순해진다. 한 회의록에 몇 건 수준이라 체감 차이도 없다
+  for (const item of items) {
+    const summary = (item.title ?? '').trim();
+
+    // 화면에서 이미 막지만 여기서도 검사한다. 화면 검증만 믿으면 안 된다
+    if (!summary || summary.length > TITLE_MAX_LENGTH) {
+      results.push({ taskId: item.taskId, ok: false, reason: 'INVALID_TITLE' });
+      continue;
+    }
+
+    const created = await createIssue({
+      projectKey,
+      issueTypeId,
+      summary,
+      assignedTo: item.assignedTo,
+    });
+
+    if (!created.ok) {
+      results.push({ taskId: item.taskId, ok: false, reason: created.reason });
+      continue;
+    }
+
+    // 이슈는 만들어졌는데 매핑이 빠지면 역방향이 조용히 끊긴다.
+    // 조용한 실패가 가장 나쁘므로 저장 실패를 결과에 드러낸다
+    let mappingSaved = true;
+    try {
+      await saveMapping({
+        taskId: item.taskId,
+        issueKey: created.issueKey,
+        pageId,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.log('saveMapping failed', item.taskId, created.issueKey, String(e));
+      mappingSaved = false;
+    }
+
+    results.push({
+      taskId: item.taskId,
+      ok: true,
+      issueKey: created.issueKey,
+      assigneeDropped: created.assigneeDropped,
+      mappingSaved,
+    });
+  }
+
+  return {
+    results,
+    created: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+    error: null,
+  };
 });
 
 export const handler = resolver.getDefinitions();

@@ -17,8 +17,11 @@ permissions:
     # 액션 아이템 조회. 상태 변경 권한은 역방향을 만들 때 추가한다
     - read:task:confluence
     - read:page:confluence
-    # 대상 프로젝트와 이슈 타입 조회. 이슈 생성 권한은 다음 슬라이스에서 추가한다
+    # 대상 프로젝트와 이슈 타입 조회, 이슈 생성
     - read:jira-work
+    - write:jira-work
+    # 태스크와 이슈 매핑 저장
+    - storage:app
 app:
   runtime:
     name: nodejs24.x
