@@ -1,5 +1,6 @@
 import Resolver from '@forge/resolver';
 import api, { route } from '@forge/api';
+import { getJson, asUserConfluence, asUserJira } from '../lib/product-api.js';
 import { titleFromTask, TITLE_MAX_LENGTH } from '../lib/task-title.js';
 import { findManyByTaskId, saveMapping } from '../lib/mapping.js';
 import { descriptionAdf } from '../lib/issue-description.js';
@@ -35,24 +36,6 @@ function fail(extra, error) {
   return { ...extra, error };
 }
 
-// 제품 호출을 한 곳에서 감싼다. 던지는 예외와 http 오류를 같은 모양으로 만든다
-async function get(client, path, label) {
-  let res;
-  try {
-    res = await client(path);
-  } catch (e) {
-    console.log(`${label} threw`, String(e));
-    return { error: 'REQUEST_FAILED' };
-  }
-  if (!res.ok) {
-    console.log(`${label} http error`, res.status, await res.text());
-    // Jira 가 없는 사이트에서는 404 가 온다. 권한 부족과 같은 안내로 묶는다
-    const denied = res.status === 401 || res.status === 403 || res.status === 404;
-    return { error: denied ? 'JIRA_UNAVAILABLE' : 'REQUEST_FAILED' };
-  }
-  return { body: await res.json() };
-}
-
 resolver.define('getTasks', async (req) => {
   // 페이지 id 는 Atlassian 이 채워 넘긴다. 사용자가 위조할 수 없어서
   // 지금 열려 있는 페이지의 태스크만 본다는 것이 보장된다
@@ -61,15 +44,15 @@ resolver.define('getTasks', async (req) => {
 
   // asUser 로 부르면 권한 검사를 Confluence 가 대신 한다.
   // 볼 수 없는 페이지의 태스크는 애초에 응답에 들어오지 않는다
-  const r = await get(
-    (p) => api.asUser().requestConfluence(p, { headers: { Accept: 'application/json' } }),
+  const r = await getJson(
+    asUserConfluence,
     route`/wiki/api/v2/tasks?page-id=${pageId}&status=incomplete&body-format=atlas_doc_format&limit=${PAGE_SIZE}`,
     'getTasks'
   );
   if (r.error) {
     return fail(
       { pageId, tasks: [], skipped: 0 },
-      r.error === 'JIRA_UNAVAILABLE' ? 'FORBIDDEN' : r.error
+      r.error === 'PRODUCT_UNAVAILABLE' ? 'FORBIDDEN' : r.error
     );
   }
 
@@ -101,8 +84,8 @@ resolver.define('getTasks', async (req) => {
 });
 
 resolver.define('getProjects', async () => {
-  const r = await get(
-    (p) => api.asUser().requestJira(p, { headers: { Accept: 'application/json' } }),
+  const r = await getJson(
+    asUserJira,
     route`/rest/api/3/project/search?maxResults=${PAGE_SIZE}&orderBy=name`,
     'getProjects'
   );
@@ -117,8 +100,8 @@ resolver.define('getIssueTypes', async (req) => {
   if (!projectKey) return fail({ issueTypeId: null, issueTypeName: null }, 'NO_PROJECT');
 
   // 옛 createmeta 는 폐기됐다. 프로젝트별 이슈 타입 엔드포인트를 쓴다
-  const r = await get(
-    (p) => api.asUser().requestJira(p, { headers: { Accept: 'application/json' } }),
+  const r = await getJson(
+    asUserJira,
     route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes`,
     'getIssueTypes'
   );
@@ -135,16 +118,59 @@ resolver.define('getIssueTypes', async (req) => {
   return { issueTypeId: picked.id, issueTypeName: picked.name, error: null };
 });
 
+// 바일라인 팝업용. 이 페이지에서 이미 Jira 로 옮긴 항목만 돌려준다.
+// 완료된 태스크도 연결은 살아 있으므로 상태로 거르지 않는다
+resolver.define('getPageLinks', async (req) => {
+  const pageId = req.context?.extension?.content?.id;
+  const siteUrl = req.context?.siteUrl ?? null;
+  if (!pageId) return fail({ links: [], siteUrl }, 'NO_PAGE');
+
+  const r = await getJson(
+    asUserConfluence,
+    route`/wiki/api/v2/tasks?page-id=${pageId}&body-format=atlas_doc_format&limit=${PAGE_SIZE}`,
+    'getPageLinks'
+  );
+  if (r.error) {
+    return fail({ links: [], siteUrl }, r.error === 'PRODUCT_UNAVAILABLE' ? 'FORBIDDEN' : r.error);
+  }
+
+  const results = Array.isArray(r.body?.results) ? r.body.results : [];
+
+  let mapped = {};
+  try {
+    mapped = await findManyByTaskId(results.map((t) => t.id));
+  } catch (e) {
+    console.log('getPageLinks mapping lookup failed', String(e));
+    return fail({ links: [], siteUrl }, 'REQUEST_FAILED');
+  }
+
+  // 제목이 비어도 연결은 보여준다. 이슈가 이미 만들어진 뒤에 회의록이 비워졌을 수 있다
+  const links = results
+    .filter((t) => mapped[t.id]?.issueKey)
+    .map((t) => ({
+      taskId: t.id,
+      title: titleFromTask(t) ?? '(내용 없음)',
+      status: t.status,
+      issueKey: mapped[t.id].issueKey,
+    }));
+
+  // 연결이 0건인 이유가 셋이라 화면이 구분해서 안내해야 한다.
+  // 옮길 것이 남았는지, 있어도 내용이 비었는지, 액션 아이템 자체가 없는지가 다르다.
+  // 이 경로는 body-format 을 붙여 조회하므로 내용 유무를 판별할 수 있다.
+  // 라벨 경로(byline)는 비용 때문에 붙이지 않아 개수만 센다
+  const movable = results.filter(
+    (t) => !mapped[t.id]?.issueKey && t.status === 'incomplete' && titleFromTask(t)
+  ).length;
+
+  return { links, taskCount: results.length, movable, siteUrl, error: null };
+});
+
 // 이슈 본문에 넣을 회의록 제목과 주소를 가져온다.
 // 실패해도 이슈 생성을 막지 않는다. 본문이 조금 빈약해질 뿐이다
 async function pageLink(pageId, siteUrl) {
   if (!pageId || !siteUrl) return {};
 
-  const r = await get(
-    (p) => api.asUser().requestConfluence(p, { headers: { Accept: 'application/json' } }),
-    route`/wiki/api/v2/pages/${pageId}`,
-    'pageLink'
-  );
+  const r = await getJson(asUserConfluence, route`/wiki/api/v2/pages/${pageId}`, 'pageLink');
 
   // webui 는 /spaces/{key}/pages/{id}/{title} 형태의 경로다.
   // 못 받으면 pageId 로 여는 옛 주소를 쓴다. 현재 주소로 넘겨준다
