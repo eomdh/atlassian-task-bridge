@@ -9,9 +9,10 @@ import { kvs } from '@forge/kvs';
 const taskKey = (taskId) => `task:${taskId}`;
 const issueKey = (key) => `issue:${key}`;
 
-export async function saveMapping({ taskId, issueKey: key, pageId, createdAt }) {
+export async function saveMapping({ taskId, issueKey: key, pageId, pageUrl, createdAt }) {
   await kvs.set(taskKey(taskId), { issueKey: key, pageId, createdAt });
-  await kvs.set(issueKey(key), { taskId, pageId });
+  // pageUrl 은 역방향이 실패를 알릴 때 쓴다. 트리거에서는 만들 수 없어 여기서 넘겨받는다
+  await kvs.set(issueKey(key), { taskId, pageId, pageUrl: pageUrl ?? null });
 }
 
 export async function findByTaskId(taskId) {
@@ -20,6 +21,25 @@ export async function findByTaskId(taskId) {
 
 export async function findByIssueKey(key) {
   return (await kvs.get(issueKey(key))) ?? null;
+}
+
+/**
+ * 실패를 이슈 댓글로 알렸다는 표시. 같은 실패로 댓글이 쌓이지 않게 한다.
+ *
+ * 뜻은 "예전에 알린 적 있다" 가 아니라 "지금 끊겨 있고 이미 알렸다" 다.
+ * 그래서 반영이 다시 성공하면 clearNotified 로 지우고, 다음에 또 끊기면 다시 알린다.
+ */
+export async function markNotified(key, notifiedAt) {
+  const current = await findByIssueKey(key);
+  if (!current) return;
+  await kvs.set(issueKey(key), { ...current, notifiedAt });
+}
+
+export async function clearNotified(key) {
+  const current = await findByIssueKey(key);
+  if (!current?.notifiedAt) return;
+  const { notifiedAt, ...rest } = current;
+  await kvs.set(issueKey(key), rest);
 }
 
 /**

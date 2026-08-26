@@ -238,7 +238,8 @@ resolver.define('createIssues', async (req) => {
 
   // 회의록으로 돌아가는 링크를 만들기 위해 페이지를 한 번 읽는다.
   // 항목마다가 아니라 요청당 한 번이라 비용이 크지 않다
-  const description = descriptionAdf(await pageLink(pageId, req.context?.siteUrl));
+  const link = await pageLink(pageId, req.context?.siteUrl);
+  const description = descriptionAdf(link);
 
   const results = [];
 
@@ -274,6 +275,9 @@ resolver.define('createIssues', async (req) => {
         taskId: item.taskId,
         issueKey: created.issueKey,
         pageId,
+        // 트리거에는 사이트 주소가 없어 회의록 링크를 만들 수 없다.
+        // 여기서 이미 계산했으므로 실패 알림이 쓰도록 같이 저장한다 (1.21)
+        pageUrl: link.pageUrl ?? null,
         createdAt: new Date().toISOString(),
       });
     } catch (e) {

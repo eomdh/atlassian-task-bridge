@@ -3,9 +3,7 @@
 //
 // 슬라이스 4 에서 ADF 를 읽었다면 여기는 쓰는 쪽이다. Jira v3 API 의 description 은
 // 평문이 아니라 ADF 를 받는다. 모양이 틀리면 400 으로 이슈 생성 자체가 실패한다.
-
-const paragraph = (...content) => ({ type: 'paragraph', content });
-const text = (value) => ({ type: 'text', text: value });
+import { doc, paragraph, text, link } from './adf-build.js';
 
 const INTRO = 'Confluence 회의록의 액션 아이템에서 만들어진 이슈입니다.';
 
@@ -17,15 +15,9 @@ export function descriptionAdf({ pageTitle, pageUrl } = {}) {
   const content = [paragraph(text(INTRO))];
 
   if (pageUrl) {
-    content.push(
-      paragraph({
-        type: 'text',
-        // 제목을 못 읽었을 때도 클릭할 것이 있어야 한다
-        text: pageTitle || '회의록 열기',
-        marks: [{ type: 'link', attrs: { href: pageUrl } }],
-      })
-    );
+    // 제목을 못 읽었을 때도 클릭할 것이 있어야 한다
+    content.push(paragraph(link(pageTitle || '회의록 열기', pageUrl)));
   }
 
-  return { type: 'doc', version: 1, content };
+  return doc(...content);
 }
