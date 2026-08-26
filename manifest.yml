@@ -6,16 +6,25 @@ modules:
         function: resolver
       render: native
       title: Task Bridge
+  # 역방향. 사람이 없는 곳에서 도는 진입점이라 리졸버와 함수를 따로 둔다
+  trigger:
+    - key: issue-updated
+      function: onIssueUpdated
+      events:
+        - avi:jira:updated:issue
   function:
     - key: resolver
       handler: index.handler
+    - key: onIssueUpdated
+      handler: reverse.onIssueUpdated
 resources:
   - key: main
     path: src/frontend/index.jsx
 permissions:
   scopes:
-    # 액션 아이템 조회. 상태 변경 권한은 역방향을 만들 때 추가한다
+    # 액션 아이템 조회와 상태 변경
     - read:task:confluence
+    - write:task:confluence
     - read:page:confluence
     # 대상 프로젝트와 이슈 타입 조회, 이슈 생성
     - read:jira-work
