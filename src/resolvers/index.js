@@ -2,6 +2,7 @@ import Resolver from '@forge/resolver';
 import api, { route } from '@forge/api';
 import { titleFromTask, TITLE_MAX_LENGTH } from '../lib/task-title.js';
 import { findManyByTaskId, saveMapping } from '../lib/mapping.js';
+import { descriptionAdf } from '../lib/issue-description.js';
 
 const resolver = new Resolver();
 
@@ -134,15 +135,38 @@ resolver.define('getIssueTypes', async (req) => {
   return { issueTypeId: picked.id, issueTypeName: picked.name, error: null };
 });
 
+// 이슈 본문에 넣을 회의록 제목과 주소를 가져온다.
+// 실패해도 이슈 생성을 막지 않는다. 본문이 조금 빈약해질 뿐이다
+async function pageLink(pageId, siteUrl) {
+  if (!pageId || !siteUrl) return {};
+
+  const r = await get(
+    (p) => api.asUser().requestConfluence(p, { headers: { Accept: 'application/json' } }),
+    route`/wiki/api/v2/pages/${pageId}`,
+    'pageLink'
+  );
+
+  // webui 는 /spaces/{key}/pages/{id}/{title} 형태의 경로다.
+  // 못 받으면 pageId 로 여는 옛 주소를 쓴다. 현재 주소로 넘겨준다
+  const webui = r.body?._links?.webui;
+  return {
+    pageTitle: r.body?.title,
+    pageUrl: webui
+      ? `${siteUrl}/wiki${webui}`
+      : `${siteUrl}/wiki/pages/viewpage.action?pageId=${pageId}`,
+  };
+}
+
 // 이슈 하나를 만든다. 담당자 때문에 거절당하면 담당자를 빼고 한 번 더 시도한다.
 // 회의록에서 멘션된 사람이 그 프로젝트를 못 쓰는 경우가 흔한데, 그때 이슈가 아예
 // 안 만들어지는 것보다 담당자 없이라도 만들어지는 편이 사용자에게 낫다
-async function createIssue({ projectKey, issueTypeId, summary, assignedTo }) {
+async function createIssue({ projectKey, issueTypeId, summary, assignedTo, description }) {
   const post = async (withAssignee) => {
     const fields = {
       project: { key: projectKey },
       issuetype: { id: issueTypeId },
       summary,
+      description,
     };
     if (withAssignee) fields.assignee = { id: assignedTo };
 
@@ -186,6 +210,10 @@ resolver.define('createIssues', async (req) => {
     return fail({ results: [], created: 0, failed: 0 }, 'BAD_REQUEST');
   }
 
+  // 회의록으로 돌아가는 링크를 만들기 위해 페이지를 한 번 읽는다.
+  // 항목마다가 아니라 요청당 한 번이라 비용이 크지 않다
+  const description = descriptionAdf(await pageLink(pageId, req.context?.siteUrl));
+
   const results = [];
 
   // 순차로 보낸다. 병렬은 Jira 속도 제한에 걸릴 수 있고, 순서가 입력과 같아야
@@ -204,6 +232,7 @@ resolver.define('createIssues', async (req) => {
       issueTypeId,
       summary,
       assignedTo: item.assignedTo,
+      description,
     });
 
     if (!created.ok) {
