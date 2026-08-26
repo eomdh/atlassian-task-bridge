@@ -5,11 +5,13 @@
   "license": "MIT",
   "private": true,
   "scripts": {
+    "test": "vitest run",
     "lint": "eslint src/**/*"
   },
   "devDependencies": {
     "eslint": "^8.56.0",
-    "eslint-plugin-react-hooks": "^4.6.0"
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@forge/bridge": "6.3.0-next.5",
