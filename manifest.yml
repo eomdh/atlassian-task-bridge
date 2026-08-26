@@ -1,6 +1,6 @@
 modules:
   confluence:contentAction:
-    - key: task-bridge-hello-world-content-action
+    - key: task-bridge-content-action
       resource: main
       resolver:
         function: resolver
@@ -12,6 +12,11 @@ modules:
 resources:
   - key: main
     path: src/frontend/index.jsx
+permissions:
+  scopes:
+    # 액션 아이템 조회. 상태 변경 권한은 역방향을 만들 때 추가한다
+    - read:task:confluence
+    - read:page:confluence
 app:
   runtime:
     name: nodejs24.x
