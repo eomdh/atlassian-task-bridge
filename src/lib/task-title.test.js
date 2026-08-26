@@ -4,7 +4,12 @@ import tasks from './fixtures/tasks.json';
 
 // fixtures/tasks.json 은 데모 사이트에서 2026-08-25 에 측정한 실제 API 응답이다.
 // id 196~201 은 직접 만든 회의록 페이지, id 145 는 시드 회의록 템플릿의 빈 체크박스.
-const byId = (id) => tasks.find((t) => t.id === id);
+// id 는 숫자로 보이지만 API 가 문자열로 준다 ("196"). 테스트에서도 문자열로 찾는다
+const byId = (id) => {
+  const found = tasks.find((t) => t.id === id);
+  if (!found) throw new Error(`fixture 에 id=${id} 태스크가 없다`);
+  return found;
+};
 
 // 실측 데이터를 흉내낸 최소 태스크. value 는 API 와 같이 JSON 문자열이어야 한다
 const taskWithText = (t) => ({
@@ -23,23 +28,23 @@ const taskWithText = (t) => ({
 
 describe('titleFromTask', () => {
   it('평문 태스크의 제목을 만든다', () => {
-    expect(titleFromTask(byId(196))).toBe('로그인 에러 문구 정리');
+    expect(titleFromTask(byId('196'))).toBe('로그인 에러 문구 정리');
   });
 
   it('링크가 든 태스크는 글자만 남기고 공백을 정리한다', () => {
-    expect(titleFromTask(byId(198))).toBe('https://developer.atlassian.com 링크 넣기');
+    expect(titleFromTask(byId('198'))).toBe('https://developer.atlassian.com 링크 넣기');
   });
 
   it('서식으로 쪼개진 태스크를 한 줄로 만든다', () => {
-    expect(titleFromTask(byId(199))).toBe('굵게 와 기울임 섞기');
+    expect(titleFromTask(byId('199'))).toBe('굵게 와 기울임 섞기');
   });
 
   it('멘션이 든 태스크는 @이름을 제목에 남긴다', () => {
-    expect(titleFromTask(byId(201))).toBe('@Deokhyeon Eom 담당 확인');
+    expect(titleFromTask(byId('201'))).toBe('@Deokhyeon Eom 담당 확인');
   });
 
   it('placeholder 만 있는 빈 태스크는 null 이다', () => {
-    expect(titleFromTask(byId(145))).toBeNull();
+    expect(titleFromTask(byId('145'))).toBeNull();
   });
 
   it('body 가 없으면 null 이다', () => {
@@ -53,7 +58,7 @@ describe('titleFromTask', () => {
   });
 
   it('길지만 제한 이내인 항목은 자르지 않는다', () => {
-    const title = titleFromTask(byId(200));
+    const title = titleFromTask(byId('200'));
     expect(title).toBe(
       '아주 긴 항목을 하나 넣어서 제목 길이 제한에 걸리는지 확인하기 위한 줄인데 이 정도로 길게 이어 쓰면 충분할 것 같습니다'
     );

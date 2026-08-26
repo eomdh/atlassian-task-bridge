@@ -24,6 +24,13 @@ describe('toPlainText', () => {
     expect(toPlainText(input)).toBe('굵게 와 기울임 섞기');
   });
 
+  it('단어 가운데가 서식으로 쪼개져도 공백을 넣지 않는다', () => {
+    // 실측에서 공백은 text 조각 안에 들어 있었다 (' 와 ').
+    // 그러므로 인라인 조각 사이에 구분자를 넣으면 단어가 갈라진다
+    const input = doc(paragraph(text('굵은', [{ type: 'strong' }]), text('글씨')));
+    expect(toPlainText(input)).toBe('굵은글씨');
+  });
+
   it('link mark 는 글자만 남기고 href 는 버린다', () => {
     const input = doc(
       paragraph(
