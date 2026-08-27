@@ -128,8 +128,6 @@ manifest 를 고쳤으면 재배포해야 하고, 스코프를 바꿨으면 `for
 요청하는 권한은 `manifest.yml` 의 `permissions.scopes` 에 그대로 있다. 액션 아이템 조회와
 상태 변경, 대상 프로젝트와 이슈 타입 조회, 이슈 생성, 연결 정보 저장이다.
 
-문의는 [GitHub 이슈](https://github.com/eomdh/atlassian-task-bridge/issues)로 받는다.
-
 ## 문서
 
 | 무엇을 | 어디에 |
