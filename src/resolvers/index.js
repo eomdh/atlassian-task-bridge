@@ -237,10 +237,23 @@ async function createIssue({ projectKey, issueTypeId, summary, assignedTo, descr
     return { ok: res.ok, status: res.status, text: await res.text() };
   };
 
+  // 201 을 받고도 key 를 못 읽으면 매핑에 undefined 가 들어간다.
+  // 이슈는 만들어졌는데 연결이 깨진 채 저장되므로 생성 실패로 다루지 않고 따로 알린다
+  const keyOf = (text) => {
+    try {
+      return JSON.parse(text)?.key ?? null;
+    } catch (e) {
+      console.log('createIssue response parse failed', String(e), text.slice(0, 200));
+      return null;
+    }
+  };
+
   try {
     const first = await post(Boolean(assignedTo));
     if (first.ok) {
-      return { ok: true, issueKey: JSON.parse(first.text).key, assigneeDropped: false };
+      const key = keyOf(first.text);
+      if (!key) return { ok: false, reason: 'CREATED_UNKNOWN_KEY' };
+      return { ok: true, issueKey: key, assigneeDropped: false };
     }
 
     // 담당자를 넣어서 실패한 경우에만 재시도할 가치가 있다
@@ -248,7 +261,9 @@ async function createIssue({ projectKey, issueTypeId, summary, assignedTo, descr
       console.log('createIssue with assignee failed', first.status, first.text);
       const retry = await post(false);
       if (retry.ok) {
-        return { ok: true, issueKey: JSON.parse(retry.text).key, assigneeDropped: true };
+        const key = keyOf(retry.text);
+        if (!key) return { ok: false, reason: 'CREATED_UNKNOWN_KEY' };
+        return { ok: true, issueKey: key, assigneeDropped: true };
       }
       console.log('createIssue without assignee failed', retry.status, retry.text);
       return { ok: false, reason: 'CREATE_FAILED', detail: retry.text.slice(0, 300) };
@@ -270,6 +285,29 @@ resolver.define('createIssues', async (req) => {
     return fail({ results: [], created: 0, failed: 0 }, 'BAD_REQUEST');
   }
 
+  // 화면이 보낸 taskId 를 그대로 믿지 않는다.
+  //
+  // 페이지 id 는 Atlassian 이 채워 넘겨 위조할 수 없지만 items 는 사용자가 만든 값이다.
+  // 다른 페이지의 태스크 id 를 넣어 매핑을 만들면, 나중에 그 이슈를 완료로 옮겼을 때
+  // 트리거가 asApp 으로 그 태스크를 건드린다. 트리거에는 사용자 권한 검사가 없어서
+  // 편집 권한이 없는 회의록의 체크박스가 바뀐다. 태스크 id 는 연속된 정수라 추측도 쉽다.
+  //
+  // 그래서 이 페이지의 태스크를 서버에서 다시 읽어 교집합만 통과시킨다.
+  // 담당자와 마감일도 여기서 읽은 값을 쓴다. 화면이 고칠 수 있는 것은 제목뿐이다
+  const owned = await getJson(
+    asUserConfluence,
+    route`/wiki/api/v2/tasks?page-id=${pageId}&limit=${PAGE_SIZE}`,
+    'createIssues tasks'
+  );
+  if (owned.error) return fail({ results: [], created: 0, failed: 0 }, owned.error);
+
+  const onPage = new Map(
+    (Array.isArray(owned.body?.results) ? owned.body.results : []).map((t) => [
+      String(t.id),
+      { assignedTo: t.assignedTo ?? null, dueAt: t.dueAt ?? null },
+    ])
+  );
+
   // 회의록으로 돌아가는 링크를 만들기 위해 페이지를 한 번 읽는다.
   // 항목마다가 아니라 요청당 한 번이라 비용이 크지 않다
   const link = await pageLink(pageId, req.context?.siteUrl);
@@ -289,20 +327,27 @@ resolver.define('createIssues', async (req) => {
   for (const item of items) {
     const summary = (item.title ?? '').trim();
 
+    const source = onPage.get(String(item.taskId));
+    if (!source) {
+      console.log('createIssues task not on page', item.taskId, 'page', pageId);
+      results.push({ taskId: item.taskId, ok: false, reason: 'TASK_NOT_ON_PAGE' });
+      continue;
+    }
+
     // 화면에서 이미 막지만 여기서도 검사한다. 화면 검증만 믿으면 안 된다
     if (!summary || summary.length > TITLE_MAX_LENGTH) {
       results.push({ taskId: item.taskId, ok: false, reason: 'INVALID_TITLE' });
       continue;
     }
 
-    const dueDate = dueDateSupported ? dueDateFor(item.dueAt, timeZone) : null;
-    if (item.dueAt && !dueDate) dueDateDropped += 1;
+    const dueDate = dueDateSupported ? dueDateFor(source.dueAt, timeZone) : null;
+    if (source.dueAt && !dueDate) dueDateDropped += 1;
 
     const created = await createIssue({
       projectKey,
       issueTypeId,
       summary,
-      assignedTo: item.assignedTo,
+      assignedTo: source.assignedTo,
       description,
       dueDate,
     });

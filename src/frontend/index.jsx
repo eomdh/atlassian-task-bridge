@@ -37,6 +37,10 @@ const RESULT_REASON = {
   CREATE_FAILED: '생성 실패. 필수 필드가 있는 프로젝트일 수 있습니다',
   INVALID_TITLE: '제목이 비었거나 너무 깁니다',
   BAD_REQUEST: '요청이 올바르지 않습니다',
+  // 화면을 정상으로 쓰면 나오지 않는다. 목록을 연 뒤 회의록에서 항목이 지워진 경우다
+  TASK_NOT_ON_PAGE: '이 페이지의 액션 아이템이 아닙니다. 목록을 새로 열어주세요',
+  // 이슈는 만들어졌는데 응답에서 키를 못 읽은 경우다. 연결이 저장되지 않아 역방향이 안 돈다
+  CREATED_UNKNOWN_KEY: '이슈는 만들어졌지만 키를 확인하지 못했습니다. Jira 에서 직접 확인해주세요',
 };
 
 const Empty = ({ skipped }) => (
@@ -269,13 +273,9 @@ const App = () => {
   const create = async (taskIds) => {
     setCreating(true);
     try {
-      const items = taskIds.map((id) => ({
-        taskId: id,
-        title: titles[id] ?? '',
-        assignedTo: result.tasks.find((t) => t.id === id)?.assignedTo ?? null,
-        // 제목과 달리 사용자가 고칠 수 없는 값이다. 화면에서 만들지 않고 조회한 것을 그대로 넘긴다
-        dueAt: result.tasks.find((t) => t.id === id)?.dueAt ?? null,
-      }));
+      // 담당자와 마감일은 보내지 않는다. 리졸버가 이 페이지의 태스크를 다시 읽어 쓴다.
+      // 화면이 고칠 수 있는 것은 제목뿐이고, 나머지를 보내면 위조 경로가 된다
+      const items = taskIds.map((id) => ({ taskId: id, title: titles[id] ?? '' }));
       const r = await invoke('createIssues', {
         projectKey: project.value,
         issueTypeId: jira.issueTypeId,
