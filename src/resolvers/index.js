@@ -4,6 +4,7 @@ import { getJson, asUserConfluence, asUserJira } from '../lib/product-api.js';
 import { titleFromTask, TITLE_MAX_LENGTH } from '../lib/task-title.js';
 import { findManyByTaskId, saveMapping } from '../lib/mapping.js';
 import { descriptionAdf } from '../lib/issue-description.js';
+import { dueDateFor } from '../lib/due-date.js';
 
 const resolver = new Resolver();
 
@@ -62,7 +63,16 @@ resolver.define('getTasks', async (req) => {
   const tasks = [];
   for (const task of results) {
     const title = titleFromTask(task);
-    if (title) tasks.push({ id: task.id, title, assignedTo: task.assignedTo ?? null });
+    if (title) {
+      // 마감일은 순간이라 여기서 날짜로 바꾸지 않는다. 표준시가 필요한데
+      // 그것은 화면이 알고 있어서 생성 시점에 넘어온다 (1.23)
+      tasks.push({
+        id: task.id,
+        title,
+        assignedTo: task.assignedTo ?? null,
+        dueAt: task.dueAt ?? null,
+      });
+    }
   }
 
   // 이미 옮긴 항목을 표시해 중복 생성을 줄인다. 막지는 않는다.
@@ -183,10 +193,31 @@ async function pageLink(pageId, siteUrl) {
   };
 }
 
+// duedate 가 이 프로젝트의 생성 화면에 없으면 보내는 순간 400 이 난다.
+// 항목마다 시도하고 실패하면 빼는 방식은 담당자 재시도와 겹쳐 어느 필드가 원인인지
+// 로그로도 안 갈린다. 요청당 한 번 물어보고 없으면 처음부터 안 넣는다
+async function supportsDueDate(projectKey, issueTypeId) {
+  const r = await getJson(
+    asUserJira,
+    route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes/${issueTypeId}`,
+    'supportsDueDate'
+  );
+  // 조용히 false 로 떨어지면 "필드가 없다" 와 "조회가 실패했다" 가 구분되지 않는다
+  if (r.error) {
+    console.log('supportsDueDate lookup failed', r.error);
+    return false;
+  }
+
+  // 이 엔드포인트가 목록을 fields 로 주는지 values 로 주는지 문서에 예시가 없어 둘 다 본다
+  const fields = r.body?.fields ?? r.body?.values ?? [];
+
+  return fields.some((f) => f.fieldId === 'duedate');
+}
+
 // 이슈 하나를 만든다. 담당자 때문에 거절당하면 담당자를 빼고 한 번 더 시도한다.
 // 회의록에서 멘션된 사람이 그 프로젝트를 못 쓰는 경우가 흔한데, 그때 이슈가 아예
 // 안 만들어지는 것보다 담당자 없이라도 만들어지는 편이 사용자에게 낫다
-async function createIssue({ projectKey, issueTypeId, summary, assignedTo, description }) {
+async function createIssue({ projectKey, issueTypeId, summary, assignedTo, description, dueDate }) {
   const post = async (withAssignee) => {
     const fields = {
       project: { key: projectKey },
@@ -195,6 +226,8 @@ async function createIssue({ projectKey, issueTypeId, summary, assignedTo, descr
       description,
     };
     if (withAssignee) fields.assignee = { id: assignedTo };
+    // 가용성을 미리 확인했으므로 거절당하면 재시도 대상이 아니다
+    if (dueDate) fields.duedate = dueDate;
 
     const res = await api.asUser().requestJira(route`/rest/api/3/issue`, {
       method: 'POST',
@@ -231,7 +264,8 @@ async function createIssue({ projectKey, issueTypeId, summary, assignedTo, descr
 
 resolver.define('createIssues', async (req) => {
   const pageId = req.context?.extension?.content?.id;
-  const { projectKey, issueTypeId, items } = req.payload ?? {};
+  // timeZone 은 화면이 브라우저에서 읽어 넘긴다. 백엔드는 스코프 없이 알 방법이 없다 (1.23)
+  const { projectKey, issueTypeId, items, timeZone } = req.payload ?? {};
   if (!projectKey || !issueTypeId || !Array.isArray(items) || items.length === 0) {
     return fail({ results: [], created: 0, failed: 0 }, 'BAD_REQUEST');
   }
@@ -241,7 +275,14 @@ resolver.define('createIssues', async (req) => {
   const link = await pageLink(pageId, req.context?.siteUrl);
   const description = descriptionAdf(link);
 
+  // 요청당 한 번이다. 항목마다 물어볼 값이 아니다
+  const dueDateSupported = await supportsDueDate(projectKey, issueTypeId);
+  console.log('createIssues duedate supported', dueDateSupported, 'tz', timeZone ?? 'none');
+
   const results = [];
+  // 마감일이 있는데 프로젝트가 그 필드를 안 받는 경우를 화면에 알린다.
+  // 조용히 빠뜨리면 사용자는 옮겨진 줄 안다
+  let dueDateDropped = 0;
 
   // 순차로 보낸다. 병렬은 Jira 속도 제한에 걸릴 수 있고, 순서가 입력과 같아야
   // 화면이 결과를 항목에 짝지을 때 단순해진다. 한 회의록에 몇 건 수준이라 체감 차이도 없다
@@ -254,12 +295,16 @@ resolver.define('createIssues', async (req) => {
       continue;
     }
 
+    const dueDate = dueDateSupported ? dueDateFor(item.dueAt, timeZone) : null;
+    if (item.dueAt && !dueDate) dueDateDropped += 1;
+
     const created = await createIssue({
       projectKey,
       issueTypeId,
       summary,
       assignedTo: item.assignedTo,
       description,
+      dueDate,
     });
 
     if (!created.ok) {
@@ -290,6 +335,7 @@ resolver.define('createIssues', async (req) => {
       ok: true,
       issueKey: created.issueKey,
       assigneeDropped: created.assigneeDropped,
+      dueDateSet: Boolean(dueDate),
       mappingSaved,
     });
   }
@@ -298,6 +344,7 @@ resolver.define('createIssues', async (req) => {
     results,
     created: results.filter((r) => r.ok).length,
     failed: results.filter((r) => !r.ok).length,
+    dueDateDropped,
     error: null,
   };
 });

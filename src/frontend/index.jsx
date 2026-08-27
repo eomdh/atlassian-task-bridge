@@ -97,6 +97,33 @@ const Target = ({ jira, selectedProject, onSelectProject, isDisabled }) => {
   );
 };
 
+// 브라우저 표준시를 읽는다. 못 읽으면 백엔드가 UTC 로 떨어뜨린다
+const browserTimeZone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+  } catch (e) {
+    console.log('time zone lookup failed', String(e));
+    return null;
+  }
+};
+
+// 회의록에 적힌 마감일을 보는 사람 기준 날짜로 보여준다.
+// 옮겼을 때 Jira 에 들어갈 값과 같은 규칙이라 화면에서 미리 확인할 수 있다
+const dueLabel = (dueAt) => {
+  if (!dueAt) return null;
+  const ms = Date.parse(dueAt);
+  if (Number.isNaN(ms)) return null;
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(ms));
+  } catch (e) {
+    return dueAt.slice(0, 10);
+  }
+};
+
 const TaskRow = ({ task, isChecked, title, onToggle, onTitleChange, isDisabled }) => {
   // 서버까지 갔다가 거절당하는 것보다 그 자리에서 알려주는 편이 낫다
   const tooLong = title.length > TITLE_MAX_LENGTH;
@@ -119,6 +146,8 @@ const TaskRow = ({ task, isChecked, title, onToggle, onTitleChange, isDisabled }
             isDisabled={isDisabled || !isChecked}
           />
         </Box>
+        {/* 마감일이 있으면 옮겨질 값을 미리 보여준다 */}
+        {dueLabel(task.dueAt) && <Lozenge>마감 {dueLabel(task.dueAt)}</Lozenge>}
         {/* 이미 옮긴 항목임을 알린다. 다시 만드는 것을 막지는 않는다 */}
         {task.issueKey && <Lozenge appearance="success">{task.issueKey}</Lozenge>}
       </Inline>
@@ -149,6 +178,7 @@ const Results = ({ outcome, tasks, titles, onRetry }) => {
             {r.ok && r.assigneeDropped && (
               <Lozenge appearance="moved">담당자 지정 실패</Lozenge>
             )}
+            {r.ok && r.dueDateSet && <Lozenge appearance="inprogress">마감일 승계</Lozenge>}
             {r.ok && r.mappingSaved === false && (
               <Lozenge appearance="removed">연결 저장 실패</Lozenge>
             )}
@@ -156,6 +186,16 @@ const Results = ({ outcome, tasks, titles, onRetry }) => {
           </Inline>
         ))}
       </Stack>
+
+      {outcome.dueDateDropped > 0 && (
+        <SectionMessage title="마감일이 옮겨지지 않은 항목이 있습니다" appearance="information">
+          <Text>
+            회의록에 적힌 마감일 {outcome.dueDateDropped}건을 옮기지 못했습니다. 이 프로젝트의
+            이슈 생성 화면에 마감일 필드가 없거나 날짜를 읽지 못한 경우입니다. 이슈는
+            정상적으로 만들어졌습니다.
+          </Text>
+        </SectionMessage>
+      )}
 
       {outcome.results.some((r) => r.ok && r.mappingSaved === false) && (
         <SectionMessage title="연결이 저장되지 않은 항목이 있습니다" appearance="warning">
@@ -233,11 +273,16 @@ const App = () => {
         taskId: id,
         title: titles[id] ?? '',
         assignedTo: result.tasks.find((t) => t.id === id)?.assignedTo ?? null,
+        // 제목과 달리 사용자가 고칠 수 없는 값이다. 화면에서 만들지 않고 조회한 것을 그대로 넘긴다
+        dueAt: result.tasks.find((t) => t.id === id)?.dueAt ?? null,
       }));
       const r = await invoke('createIssues', {
         projectKey: project.value,
         issueTypeId: jira.issueTypeId,
         items,
+        // 마감일은 순간으로 저장돼 있어 날짜로 바꾸려면 표준시가 필요하다.
+        // 백엔드는 스코프를 늘리지 않으면 알 수 없어서 브라우저에서 읽어 넘긴다 (1.23)
+        timeZone: browserTimeZone(),
       });
       setOutcome(r);
     } catch (e) {
