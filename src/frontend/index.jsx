@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ForgeReconciler, {
   Text,
   Heading,
@@ -14,6 +14,7 @@ import ForgeReconciler, {
   LoadingButton,
   Spinner,
   SectionMessage,
+  Link,
   Lozenge,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
@@ -33,6 +34,22 @@ const JIRA_ERROR_MESSAGE = {
   REQUEST_FAILED: 'Jira 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.',
 };
 
+// 재시도 결과를 이전 결과 위에 얹는다. 같은 taskId 는 새 결과가 이긴다
+const mergeOutcome = (prev, next) => {
+  const byTask = new Map((prev?.results ?? []).map((r) => [r.taskId, r]));
+  for (const r of next.results ?? []) byTask.set(r.taskId, r);
+  const results = [...byTask.values()];
+  return {
+    ...next,
+    results,
+    created: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+    dueDateDropped: (prev?.dueDateDropped ?? 0) + (next.dueDateDropped ?? 0),
+    // invoke 가 통째로 실패한 경우 next 에 없다. 먼저 받은 값을 살린다
+    siteUrl: next.siteUrl ?? prev?.siteUrl ?? null,
+  };
+};
+
 const RESULT_REASON = {
   CREATE_FAILED: '생성 실패. 필수 필드가 있는 프로젝트일 수 있습니다',
   INVALID_TITLE: '제목이 비었거나 너무 깁니다',
@@ -40,6 +57,7 @@ const RESULT_REASON = {
   // 화면을 정상으로 쓰면 나오지 않는다. 목록을 연 뒤 회의록에서 항목이 지워진 경우다
   TASK_NOT_ON_PAGE: '이 페이지의 액션 아이템이 아닙니다. 목록을 새로 열어주세요',
   // 이슈는 만들어졌는데 응답에서 키를 못 읽은 경우다. 연결이 저장되지 않아 역방향이 안 돈다
+  TOO_MANY_ITEMS: '한 번에 만들 수 있는 수를 넘었습니다. 남은 항목은 다시 시도해주세요',
   CREATED_UNKNOWN_KEY: '이슈는 만들어졌지만 키를 확인하지 못했습니다. Jira 에서 직접 확인해주세요',
 };
 
@@ -128,12 +146,14 @@ const dueLabel = (dueAt) => {
   }
 };
 
-const TaskRow = ({ task, isChecked, title, onToggle, onTitleChange, isDisabled }) => {
+const TaskRow = ({ task, siteUrl, isChecked, title, onToggle, onTitleChange, isDisabled }) => {
   // 서버까지 갔다가 거절당하는 것보다 그 자리에서 알려주는 편이 낫다
   const tooLong = title.length > TITLE_MAX_LENGTH;
   return (
     <Stack space="space.050">
       <Inline space="space.100" alignBlock="center">
+        {/* label 을 주면 체크박스 오른쪽에 그대로 보인다. 숨기는 방법이 없어
+            제목이 두 번 나오므로 넣지 않는다. 접근성 한계로 2.3 에 남겼다 */}
         <Checkbox
           name={`task-${task.id}`}
           value={task.id}
@@ -150,11 +170,26 @@ const TaskRow = ({ task, isChecked, title, onToggle, onTitleChange, isDisabled }
             isDisabled={isDisabled || !isChecked}
           />
         </Box>
-        {/* 마감일이 있으면 옮겨질 값을 미리 보여준다 */}
-        {dueLabel(task.dueAt) && <Lozenge>마감 {dueLabel(task.dueAt)}</Lozenge>}
-        {/* 이미 옮긴 항목임을 알린다. 다시 만드는 것을 막지는 않는다 */}
-        {task.issueKey && <Lozenge appearance="success">{task.issueKey}</Lozenge>}
       </Inline>
+
+      {/* 뱃지를 제목과 한 줄에 두면 입력칸이 밀려 마감일이 잘린다. 아래로 내린다 */}
+      {(dueLabel(task.dueAt) || task.issueKey) && (
+        <Box xcss={{ paddingInlineStart: 'space.400' }}>
+          <Inline space="space.100" alignBlock="center">
+            {/* 마감일은 상태가 아니라 값이다. 뱃지로 두면 이슈 키와 구분이 안 된다 */}
+            {dueLabel(task.dueAt) && <Text>마감 {dueLabel(task.dueAt)}</Text>}
+            {/* 이미 옮긴 항목임을 알린다. 다시 만드는 것을 막지는 않는다 */}
+            {task.issueKey &&
+              (siteUrl ? (
+                <Link href={`${siteUrl}/browse/${task.issueKey}`} openNewTab>
+                  {task.issueKey}
+                </Link>
+              ) : (
+                <Text>{task.issueKey}</Text>
+              ))}
+          </Inline>
+        </Box>
+      )}
       {tooLong && (
         <ErrorMessage>
           제목이 {TITLE_MAX_LENGTH}자를 넘습니다. 현재 {title.length}자입니다.
@@ -178,11 +213,19 @@ const Results = ({ outcome, tasks, titles, onRetry }) => {
             {/* 색만으로 구분하지 않도록 글자를 함께 둔다 */}
             <Lozenge appearance={r.ok ? 'success' : 'removed'}>{r.ok ? '생성' : '실패'}</Lozenge>
             <Text>{titleOf(r.taskId)}</Text>
-            {r.ok && <Lozenge appearance="success">{r.issueKey}</Lozenge>}
+            {/* 상태 뱃지와 같은 모양이면 둘이 구분되지 않는다.
+                링크로 두면 눈에도 다르고 방금 만든 이슈로 바로 갈 수 있다 */}
+            {r.ok &&
+              (outcome.siteUrl ? (
+                <Link href={`${outcome.siteUrl}/browse/${r.issueKey}`} openNewTab>
+                  {r.issueKey}
+                </Link>
+              ) : (
+                <Text>{r.issueKey}</Text>
+              ))}
             {r.ok && r.assigneeDropped && (
               <Lozenge appearance="moved">담당자 지정 실패</Lozenge>
             )}
-            {r.ok && r.dueDateSet && <Lozenge appearance="inprogress">마감일 승계</Lozenge>}
             {r.ok && r.mappingSaved === false && (
               <Lozenge appearance="removed">연결 저장 실패</Lozenge>
             )}
@@ -225,6 +268,8 @@ const App = () => {
   const [selected, setSelected] = useState([]);
   const [jira, setJira] = useState(null);
   const [project, setProject] = useState(null);
+  // 마지막으로 고른 프로젝트. 늦게 도착한 응답을 버리는 데 쓴다
+  const latestProject = useRef(null);
   const [creating, setCreating] = useState(false);
   const [outcome, setOutcome] = useState(null);
 
@@ -252,17 +297,23 @@ const App = () => {
   const selectProject = (option) => {
     setProject(option);
     setJira((prev) => ({ ...prev, issueTypeId: null, issueTypeName: null, issueTypeError: null }));
-    invoke('getIssueTypes', { projectKey: option.value })
-      .then((r) =>
+    // 프로젝트를 빠르게 두 번 고르면 먼저 고른 쪽 응답이 나중에 도착할 수 있다.
+    // 그대로 두면 B 를 골라놓고 A 의 이슈 타입으로 만들어 Jira 가 거절한다
+    const requested = option.value;
+    latestProject.current = requested;
+    invoke('getIssueTypes', { projectKey: requested })
+      .then((r) => {
+        if (latestProject.current !== requested) return;
         setJira((prev) => ({
           ...prev,
           issueTypeId: r.issueTypeId,
           issueTypeName: r.issueTypeName,
           issueTypeError: r.error,
-        }))
-      )
+        }));
+      })
       .catch((e) => {
         console.log('invoke getIssueTypes failed', String(e));
+        if (latestProject.current !== requested) return;
         setJira((prev) => ({ ...prev, issueTypeError: 'REQUEST_FAILED' }));
       });
   };
@@ -284,14 +335,17 @@ const App = () => {
         // 백엔드는 스코프를 늘리지 않으면 알 수 없어서 브라우저에서 읽어 넘긴다 (1.23)
         timeZone: browserTimeZone(),
       });
-      setOutcome(r);
+      // 재시도는 실패한 것만 다시 보낸다. 결과를 통째로 갈아치우면 첫 회에 만들어진
+      // 이슈 키가 화면에서 사라진다. 그 목록을 다시 볼 방법이 없으므로 taskId 로 합친다
+      setOutcome((prev) => mergeOutcome(prev, r));
     } catch (e) {
       console.log('invoke createIssues failed', String(e));
-      setOutcome({
-        results: taskIds.map((id) => ({ taskId: id, ok: false, reason: 'CREATE_FAILED' })),
-        created: 0,
-        failed: taskIds.length,
-      });
+      setOutcome((prev) =>
+        mergeOutcome(prev, {
+          results: taskIds.map((id) => ({ taskId: id, ok: false, reason: 'CREATE_FAILED' })),
+          error: null,
+        })
+      );
     } finally {
       setCreating(false);
     }
@@ -367,6 +421,7 @@ const App = () => {
         {result.tasks.map((task) => (
           <TaskRow
             key={task.id}
+            siteUrl={result.siteUrl}
             task={task}
             isChecked={selected.includes(task.id)}
             title={titles[task.id] ?? ''}

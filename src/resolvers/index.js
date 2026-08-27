@@ -5,11 +5,20 @@ import { titleFromTask, TITLE_MAX_LENGTH } from '../lib/task-title.js';
 import { findManyByTaskId, saveMapping } from '../lib/mapping.js';
 import { descriptionAdf } from '../lib/issue-description.js';
 import { dueDateFor } from '../lib/due-date.js';
+import { taskOrderFromAdf } from '../lib/task-order.js';
 
 const resolver = new Resolver();
 
 // 한 회의록에 액션 아이템이 100개를 넘는 경우는 없다고 보고 페이지네이션을 따라가지 않는다
 const PAGE_SIZE = 100;
+
+// createmeta 필드 목록의 기본 페이지 크기가 50 이라 명시해서 넉넉히 받는다
+const FIELD_PAGE_SIZE = 200;
+
+// 한 번에 만들 수 있는 이슈 수. 순차로 보내기 때문에 항목이 많으면 리졸버가 시간 안에
+// 못 끝낸다. 그러면 invoke 가 거절되고 화면은 전부 실패로 표시하는데, 실제로는 상당수가
+// 만들어져 있어서 재시도가 중복 생성이 된다. 조용히 자르지 않고 남는 것을 결과에 알린다
+const MAX_ITEMS_PER_REQUEST = 25;
 
 // 회의록의 액션 아이템은 성격이 전부 할 일이다. 타입을 고르게 하지 않고 이것을 우선한다
 const PREFERRED_ISSUE_TYPE = 'Task';
@@ -37,6 +46,39 @@ function fail(extra, error) {
   return { ...extra, error };
 }
 
+// 회의록 본문을 한 번 읽어 액션 아이템 순서를 맞춘다.
+// 모달을 열 때만 도는 경로라 호출 한 번을 더 쓴다. 바일라인 라벨에는 쓰지 않는다
+async function sortByPageOrder(tasks, pageId) {
+  if (tasks.length < 2) return tasks;
+
+  const r = await getJson(
+    asUserConfluence,
+    route`/wiki/api/v2/pages/${pageId}?body-format=atlas_doc_format`,
+    'sortByPageOrder'
+  );
+  if (r.error) return tasks;
+
+  let order;
+  try {
+    order = taskOrderFromAdf(JSON.parse(r.body?.body?.atlas_doc_format?.value ?? 'null'));
+  } catch (e) {
+    console.log('sortByPageOrder parse failed', String(e));
+    return tasks;
+  }
+
+  const rank = new Map(order.map((localId, i) => [localId, i]));
+  const matched = tasks.filter((t) => rank.has(t.localId)).length;
+  console.log('sortByPageOrder matched', matched, 'of', tasks.length);
+
+  // localId 가 어긋나면 정렬이 무의미해진다. 그때는 손대지 않는다
+  if (matched === 0) return tasks;
+
+  // 못 맞춘 항목은 뒤로 보내되 서로의 순서는 유지한다 (Array.sort 는 안정 정렬이다)
+  return [...tasks].sort(
+    (a, b) => (rank.get(a.localId) ?? Infinity) - (rank.get(b.localId) ?? Infinity)
+  );
+}
+
 resolver.define('getTasks', async (req) => {
   // 페이지 id 는 Atlassian 이 채워 넘긴다. 사용자가 위조할 수 없어서
   // 지금 열려 있는 페이지의 태스크만 본다는 것이 보장된다
@@ -59,9 +101,13 @@ resolver.define('getTasks', async (req) => {
 
   const results = Array.isArray(r.body?.results) ? r.body.results : [];
 
+  // 회의록에 적힌 순서로 맞춘다. tasks API 가 주는 순서는 문서 순서가 아니다.
+  // 실패해도 목록은 보여준다. 순서만 API 가 준 대로 남는다
+  const ordered = await sortByPageOrder(results, pageId);
+
   // 화면은 ADF 를 모른다. 변환은 여기서 끝내고 제목만 넘긴다
   const tasks = [];
-  for (const task of results) {
+  for (const task of ordered) {
     const title = titleFromTask(task);
     if (title) {
       // 마감일은 순간이라 여기서 날짜로 바꾸지 않는다. 표준시가 필요한데
@@ -87,6 +133,8 @@ resolver.define('getTasks', async (req) => {
 
   return {
     pageId,
+    // 이미 옮긴 항목에서 이슈로 건너뛸 수 있게 한다. 결과 화면과 같은 방식이다
+    siteUrl: req.context?.siteUrl ?? null,
     tasks: tasks.map((t) => ({ ...t, issueKey: mapped[t.id]?.issueKey ?? null })),
     skipped: results.length - tasks.length,
     error: null,
@@ -99,7 +147,11 @@ resolver.define('getProjects', async () => {
     route`/rest/api/3/project/search?maxResults=${PAGE_SIZE}&orderBy=name`,
     'getProjects'
   );
-  if (r.error) return fail({ projects: [] }, r.error);
+  // 화면이 "잠시 후 다시" 라고 안내하면 안 되는 상태다. 재시도로 풀리지 않는다.
+  // getTasks 가 FORBIDDEN 으로 바꾸는 것과 같은 이유로 여기서도 화면의 말로 바꾼다
+  if (r.error) {
+    return fail({ projects: [] }, r.error === 'PRODUCT_UNAVAILABLE' ? 'JIRA_UNAVAILABLE' : r.error);
+  }
 
   const projects = (r.body?.values ?? []).map((p) => ({ id: p.id, key: p.key, name: p.name }));
   return { projects, error: null };
@@ -115,7 +167,12 @@ resolver.define('getIssueTypes', async (req) => {
     route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes`,
     'getIssueTypes'
   );
-  if (r.error) return fail({ issueTypeId: null, issueTypeName: null }, r.error);
+  if (r.error) {
+    return fail(
+      { issueTypeId: null, issueTypeName: null },
+      r.error === 'PRODUCT_UNAVAILABLE' ? 'JIRA_UNAVAILABLE' : r.error
+    );
+  }
 
   const all = r.body?.issueTypes ?? [];
 
@@ -146,12 +203,13 @@ resolver.define('getPageLinks', async (req) => {
 
   const results = Array.isArray(r.body?.results) ? r.body.results : [];
 
+  // 매핑을 못 읽어도 액션 아이템 수는 안다. 팝업이 "옮길 것이 있다" 까지는 안내할 수 있어
+  // 오류 화면보다 낫다. getTasks 가 목록을 살려두는 것과 같은 규칙이다 (1.14)
   let mapped = {};
   try {
     mapped = await findManyByTaskId(results.map((t) => t.id));
   } catch (e) {
     console.log('getPageLinks mapping lookup failed', String(e));
-    return fail({ links: [], siteUrl }, 'REQUEST_FAILED');
   }
 
   // 제목이 비어도 연결은 보여준다. 이슈가 이미 만들어진 뒤에 회의록이 비워졌을 수 있다
@@ -197,9 +255,11 @@ async function pageLink(pageId, siteUrl) {
 // 항목마다 시도하고 실패하면 빼는 방식은 담당자 재시도와 겹쳐 어느 필드가 원인인지
 // 로그로도 안 갈린다. 요청당 한 번 물어보고 없으면 처음부터 안 넣는다
 async function supportsDueDate(projectKey, issueTypeId) {
+  // 기본 페이지 크기가 50 이다. 커스텀 필드가 많은 프로젝트에서는 duedate 가 뒤로 밀려
+  // 첫 장에 안 들어오고, 그러면 마감일이 프로젝트 전체에서 조용히 빠진다
   const r = await getJson(
     asUserJira,
-    route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes/${issueTypeId}`,
+    route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes/${issueTypeId}?maxResults=${FIELD_PAGE_SIZE}`,
     'supportsDueDate'
   );
   // 조용히 false 로 떨어지면 "필드가 없다" 와 "조회가 실패했다" 가 구분되지 않는다
@@ -208,10 +268,17 @@ async function supportsDueDate(projectKey, issueTypeId) {
     return false;
   }
 
-  // 이 엔드포인트가 목록을 fields 로 주는지 values 로 주는지 문서에 예시가 없어 둘 다 본다
-  const fields = r.body?.fields ?? r.body?.values ?? [];
+  // 이 엔드포인트가 목록을 fields 로 주는지 values 로 주는지 문서에 예시가 없어 둘 다 본다.
+  // ?? 는 빈 배열을 통과시키므로 길이로 고른다
+  const body = r.body ?? {};
+  const fields = (body.fields?.length ? body.fields : body.values) ?? [];
 
-  return fields.some((f) => f.fieldId === 'duedate');
+  const supported = fields.some((f) => f.fieldId === 'duedate');
+  // 페이지가 더 있는데 못 찾은 경우와 진짜 없는 경우를 로그에서 가른다
+  if (!supported && body.isLast === false) {
+    console.log('supportsDueDate field list truncated', fields.length, 'of', body.total);
+  }
+  return supported;
 }
 
 // 이슈 하나를 만든다. 담당자 때문에 거절당하면 담당자를 빼고 한 번 더 시도한다.
@@ -319,12 +386,23 @@ resolver.define('createIssues', async (req) => {
 
   const results = [];
   // 마감일이 있는데 프로젝트가 그 필드를 안 받는 경우를 화면에 알린다.
-  // 조용히 빠뜨리면 사용자는 옮겨진 줄 안다
+  // 조용히 빠뜨리면 사용자는 옮겨진 줄 안다.
+  //
+  // 반대로 성공한 승계는 줄마다 말하지 않는다. 못 옮긴 것만 알리면 안내가 없는 것이
+  // 곧 다 옮겨졌다는 뜻이 되고, 마감일은 만들기 전 목록에서 이미 보여줬다
   let dueDateDropped = 0;
+
+  const accepted = items.slice(0, MAX_ITEMS_PER_REQUEST);
+  for (const item of items.slice(MAX_ITEMS_PER_REQUEST)) {
+    results.push({ taskId: item.taskId, ok: false, reason: 'TOO_MANY_ITEMS' });
+  }
+  if (items.length > accepted.length) {
+    console.log('createIssues capped', items.length, 'to', accepted.length);
+  }
 
   // 순차로 보낸다. 병렬은 Jira 속도 제한에 걸릴 수 있고, 순서가 입력과 같아야
   // 화면이 결과를 항목에 짝지을 때 단순해진다. 한 회의록에 몇 건 수준이라 체감 차이도 없다
-  for (const item of items) {
+  for (const item of accepted) {
     const summary = (item.title ?? '').trim();
 
     const source = onPage.get(String(item.taskId));
@@ -380,7 +458,6 @@ resolver.define('createIssues', async (req) => {
       ok: true,
       issueKey: created.issueKey,
       assigneeDropped: created.assigneeDropped,
-      dueDateSet: Boolean(dueDate),
       mappingSaved,
     });
   }
@@ -390,6 +467,8 @@ resolver.define('createIssues', async (req) => {
     created: results.filter((r) => r.ok).length,
     failed: results.filter((r) => !r.ok).length,
     dueDateDropped,
+    // 방금 만든 이슈로 건너뛸 수 있게 한다. 바일라인 팝업과 같은 방식이다
+    siteUrl: req.context?.siteUrl ?? null,
     error: null,
   };
 });

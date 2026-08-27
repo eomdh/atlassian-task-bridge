@@ -1,12 +1,11 @@
 {
-  "name": "confluence-content-action-ui-kit",
-  "version": "1.1.47-next.7",
-  "main": "index.js",
+  "name": "atlassian-task-bridge",
+  "version": "0.1.0",
   "license": "MIT",
   "private": true,
   "scripts": {
     "test": "vitest run",
-    "lint": "eslint src/**/*"
+    "lint": "eslint src --ext .js,.jsx"
   },
   "devDependencies": {
     "eslint": "^8.56.0",
