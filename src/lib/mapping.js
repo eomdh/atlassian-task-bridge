@@ -10,9 +10,24 @@ const taskKey = (taskId) => `task:${taskId}`;
 const issueKey = (key) => `issue:${key}`;
 
 export async function saveMapping({ taskId, issueKey: key, pageId, pageUrl, createdAt }) {
-  await kvs.set(taskKey(taskId), { issueKey: key, pageId, createdAt });
+  // 역방향 키를 먼저 쓴다. 둘 중 하나만 써지는 상황에서 어느 쪽이 남는지가 다르다.
+  // 정방향만 남으면 화면은 연결됐다고 표시하는데 역방향이 영영 안 돈다. 조용한 실패다.
+  // 역방향만 남으면 화면이 미연결로 보여 사용자가 다시 누를 수 있고 되돌리기는 동작한다
+  //
   // pageUrl 은 역방향이 실패를 알릴 때 쓴다. 트리거에서는 만들 수 없어 여기서 넘겨받는다
   await kvs.set(issueKey(key), { taskId, pageId, pageUrl: pageUrl ?? null });
+  await kvs.set(taskKey(taskId), { issueKey: key, pageId, createdAt });
+}
+
+/**
+ * 앱이 이 이슈 때문에 태스크를 체크했는지 남긴다.
+ * 완료가 아닌 상태끼리 옮길 때 사람이 직접 체크한 것을 지우지 않기 위한 근거다 (1.17).
+ */
+export async function setCompleted(key, completedAt) {
+  const current = await findByIssueKey(key);
+  if (!current) return;
+  if ((current.completedAt ?? null) === completedAt) return;
+  await kvs.set(issueKey(key), { ...current, completedAt });
 }
 
 export async function findByTaskId(taskId) {
@@ -47,12 +62,14 @@ export async function clearNotified(key) {
  * 없는 것은 결과에서 빠진다.
  */
 export async function findManyByTaskId(taskIds) {
+  // storage 에 여러 키를 한 번에 읽는 API 가 없다. 순차로 읽으면 100건짜리 페이지에서
+  // 왕복이 100번 쌓이는데, 이 함수는 페이지를 열 때마다 도는 바일라인 경로에도 쓰인다.
+  // 병렬로 보내 왕복을 한 번으로 줄인다
+  const values = await Promise.all(taskIds.map((taskId) => findByTaskId(taskId)));
+
   const found = {};
-  // storage 에 여러 키를 한 번에 읽는 API 가 없어서 순차로 읽는다.
-  // 한 페이지의 액션 아이템이 100건 이내라 문제가 되지 않는다
-  for (const taskId of taskIds) {
-    const value = await findByTaskId(taskId);
-    if (value) found[taskId] = value;
-  }
+  taskIds.forEach((taskId, i) => {
+    if (values[i]) found[taskId] = values[i];
+  });
   return found;
 }

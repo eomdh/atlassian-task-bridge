@@ -4,7 +4,7 @@
 // asUser() 를 못 쓰고 asApp() 으로 돈다. 실패해도 화면에 뜨지 않아서 로그가 유일한
 // 관측 수단이다. 그래서 단계마다 [reverse] 접두사로 남긴다.
 import api, { route } from '@forge/api';
-import { findByIssueKey, markNotified, clearNotified } from './lib/mapping.js';
+import { findByIssueKey, markNotified, clearNotified, setCompleted } from './lib/mapping.js';
 import { failureCommentAdf } from './lib/failure-comment.js';
 
 // Jira 상태 이름은 프로젝트마다 언어마다 다르다 (완료, Done, 배포완료).
@@ -90,9 +90,11 @@ export async function onIssueUpdated(event) {
 
   // 이 이벤트는 어떤 필드가 바뀌어도 온다. 설명만 고쳐도 온다.
   // 상태 변경이 아니면 Storage 를 읽기 전에 끊는다
-  const changedFields = (event?.changelog?.items ?? []).map((i) => i.field ?? i.fieldId);
-  const statusChanged = changedFields.includes('status');
-  log('event', issueKey, 'changed=' + JSON.stringify(changedFields));
+  const changed = event?.changelog?.items ?? [];
+  // manifest 필터와 같은 규칙이어야 한다. 거기서 통과한 이벤트를 여기서 떨구면
+  // 역방향이 통째로 멈추고 로그로도 안 갈린다 (1.22)
+  const statusChanged = changed.some((i) => i.field === 'status' || i.fieldId === 'status');
+  log('event', issueKey, 'changed=' + JSON.stringify(changed.map((i) => i.field ?? i.fieldId)));
   if (!statusChanged) return;
 
   // 우리가 만든 이슈가 아니면 할 일이 없다
@@ -113,8 +115,17 @@ export async function onIssueUpdated(event) {
   if (!category.key) return;
 
   // 완료로 옮기면 체크하고, 되돌리면 체크를 푼다.
-  // 완료만 따라가면 다리가 다시 한 방향이 된다
-  const status = category.key === DONE_CATEGORY ? 'complete' : 'incomplete';
+  //
+  // 다만 되돌리기는 우리가 체크한 것에만 적용한다. 완료가 아닌 상태끼리 옮기는 것
+  // (해야 할 일에서 진행 중으로) 까지 incomplete 를 쓰면, 사람이 회의록에서 직접 체크한
+  // 것을 앱이 지운다. 1.17 이 그러지 않는다고 적어둔 자리다.
+  // 우리가 체크했는지는 매핑에 남긴 completedAt 으로 안다
+  const done = category.key === DONE_CATEGORY;
+  if (!done && !mapping.completedAt) {
+    log('skip uncheck', issueKey, 'not completed by app');
+    return;
+  }
+  const status = done ? 'complete' : 'incomplete';
 
   // 트리거에는 사용자 컨텍스트가 없어 asApp 으로만 부를 수 있다.
   // 앱이 그 공간의 페이지를 편집할 수 있어야 통과한다
@@ -137,6 +148,13 @@ export async function onIssueUpdated(event) {
       return;
     }
     log('task updated', mapping.taskId, status);
+
+    // 다음에 되돌릴 때 우리가 체크한 것인지 판별하는 근거다
+    try {
+      await setCompleted(issueKey, done ? new Date().toISOString() : null);
+    } catch (e) {
+      log('completed flag write failed', issueKey, String(e));
+    }
 
     // 끊겼다가 이어졌으면 다음 실패는 다시 알려야 한다
     if (mapping.notifiedAt) {

@@ -168,6 +168,8 @@ assignedTo          712020:a5756fbe-2fc1-4ad1-af73-2d97a40e8670
       emoji       attrs.text 또는 attrs.shortName
       inlineCard  attrs.url          글자 필드가 아예 없다
       placeholder 건너뛴다            내용 없는 빈 체크박스
+      status      attrs.text         상태 칩. 빠지면 문장이 끊긴다
+      date        건너뛴다            마감일은 제목이 아니라 이슈 기한으로 옮긴다 (1.23)
       hardBreak   공백 하나로
 3. 인라인 조각끼리는 구분자 없이 붙이고, 블록 사이에만 공백 하나를 넣는다
 4. 연속 공백을 하나로 줄인다
@@ -464,6 +466,17 @@ id=10004  name='새 기능'     untranslatedName='New Feature'  hierarchyLevel=0
 값만 달라지므로 추가 비용이 없다.
 
 사람이 회의록에서 직접 체크한 것을 앱이 되돌리는 일은 없다. Jira 이벤트에만 반응한다.
+
+**되돌리기는 앱이 체크한 것에만 적용한다.** 처음 구현은 `done` 이 아니면 무조건 `incomplete`
+를 썼는데, 그러면 완료를 거치지 않는 전이(해야 할 일에서 진행 중으로)에서도 체크를 지운다.
+사람이 회의록에서 직접 체크해둔 항목이 그렇게 지워지면 바로 위 문장이 거짓이 된다.
+
+앱이 체크했는지는 매핑에 남기는 `completedAt` 으로 판별한다. 없으면 손대지 않고 로그만
+남긴다. 완료가 아닌 상태끼리 옮길 때 나가던 불필요한 PUT 도 같이 사라진다.
+
+```
+[reverse] skip uncheck TB-12 not completed by app
+```
 
 ### 1.18 트리거는 사람이 없는 곳에서 돈다
 
