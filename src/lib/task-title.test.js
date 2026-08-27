@@ -81,4 +81,13 @@ describe('titleFromTask', () => {
   it('제한은 Jira 이슈 제목 최대 길이인 255 다', () => {
     expect(TITLE_MAX_LENGTH).toBe(255);
   });
+
+  it('이모지 경계에서 글자를 쪼개지 않는다', () => {
+    // slice 로 자르면 짝 잃은 surrogate 가 남아 Jira 가 거절하거나 깨져 저장된다
+    const title = titleFromTask(taskWithText('a' + '\u{1F600}'.repeat(300)));
+    expect(title.length).toBeLessThanOrEqual(TITLE_MAX_LENGTH);
+    // 짝 잃은 상위 surrogate 가 남아 있으면 안 된다
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(title)).toBe(false);
+    expect(title.endsWith('…')).toBe(true);
+  });
 });

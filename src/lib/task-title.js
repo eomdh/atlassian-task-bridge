@@ -30,5 +30,10 @@ export function titleFromTask(task) {
   if (!text) return null;
 
   if (text.length <= TITLE_MAX_LENGTH) return text;
-  return text.slice(0, TITLE_MAX_LENGTH - ELLIPSIS.length) + ELLIPSIS;
+  // 길이 제한은 UTF-16 코드 단위로 세므로 자르기도 같은 단위여야 한다.
+  // 다만 이모지 한 글자가 두 단위라 경계에서 쪼개지면 짝 잃은 surrogate 가 남는다.
+  // 코드 포인트 단위로 자르면 이 문제는 없지만 결과 길이가 제한을 넘는다
+  const cut = text.slice(0, TITLE_MAX_LENGTH - ELLIPSIS.length);
+  const whole = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+  return whole + ELLIPSIS;
 }

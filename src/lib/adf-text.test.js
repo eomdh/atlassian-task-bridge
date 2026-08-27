@@ -102,4 +102,30 @@ describe('toPlainText', () => {
     expect(toPlainText(withContent)).toBe('안쪽');
     expect(toPlainText(leaf)).toBe('');
   });
+
+  it('상태 칩의 글자를 제목에 넣는다', () => {
+    // /status 로 넣는 칩이다. 빠지면 "배포 후 확인" 이 "배포 확인" 이 된다
+    const adf = {
+      type: 'paragraph',
+      content: [
+        { type: 'text', text: '배포 ' },
+        { type: 'status', attrs: { text: '후', color: 'blue' } },
+        { type: 'text', text: ' 확인' },
+      ],
+    };
+    expect(toPlainText(adf)).toBe('배포 후 확인');
+  });
+
+  it('날짜는 제목에서 뺀다', () => {
+    // 마감일은 이슈 기한으로 옮긴다. 제목에도 두면 같은 정보가 두 곳에 생긴다
+    const adf = {
+      type: 'paragraph',
+      content: [
+        { type: 'text', text: '스펙 리뷰 ' },
+        { type: 'date', attrs: { timestamp: '1788480000000' } },
+        { type: 'text', text: ' 까지' },
+      ],
+    };
+    expect(toPlainText(adf)).toBe('스펙 리뷰 까지');
+  });
 });

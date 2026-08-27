@@ -34,6 +34,13 @@ function leafText(node) {
     // 회의록 템플릿의 빈 체크박스가 이 조각만 가진다. 안내 문구를 제목으로 쓰면 안 된다
     case 'placeholder':
       return '';
+    // 상태 칩(`/status`)의 글자는 제목의 일부다. 빠지면 문장이 끊긴다
+    case 'status':
+      return attrs.text ?? '';
+    // 날짜는 일부러 뺀다. 마감일은 제목이 아니라 이슈 기한으로 옮긴다 (1.23).
+    // 제목에도 남기면 "스펙 리뷰 2026-09-04" 처럼 같은 정보가 두 곳에 생긴다
+    case 'date':
+      return '';
     default:
       return '';
   }
