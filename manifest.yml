@@ -24,6 +24,17 @@ modules:
       function: onIssueUpdated
       events:
         - avi:jira:updated:issue
+      # 이 이벤트는 어떤 필드가 바뀌어도 온다. 상태 변경만 함수까지 오게 좁힌다.
+      #
+      # 표현식 오류의 기본 동작이 "이벤트를 버림" 이라 onError 로 뒤집는다. 그래야 최악이
+      # 침묵이 아니라 지금 동작 그대로가 된다. field 와 fieldId 를 둘 다 보는 것은 실측이
+      # 어느 쪽이었는지 갈라주지 않아서다
+      filter:
+        ignoreSelf: true
+        expression: >-
+          event.changelog != null && event.changelog.items != null &&
+          event.changelog.items.some(item => item.field == 'status' || item.fieldId == 'status')
+        onError: RECEIVE_AND_LOG
   function:
     - key: resolver
       handler: index.handler
