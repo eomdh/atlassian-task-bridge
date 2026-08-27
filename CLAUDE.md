@@ -19,7 +19,9 @@ Atlassian Forge 앱. Confluence 회의록에 흩어진 액션 아이템을 Jira 
 
 ```
 npm test                                         단위 테스트 1회 실행
+npm run lint                                     ESLint
 forge lint                                       manifest 와 코드 검증
+forge install list                               현재 설치 목록과 installationId
 forge deploy --non-interactive -e development    배포
 forge install --non-interactive --upgrade ...    스코프 변경 후 재설치
 forge logs --since 15m -e development            배포된 앱 로그
@@ -30,6 +32,12 @@ forge tunnel                                     로컬 코드로 프록시
 - `deploy`, `install`, `environments` 에는 `--non-interactive` 를 붙인다. 안 붙이면 프롬프트가 떠서 비대화형 셸에서 막힌다
 - 자격증명과 사이트 정보는 `CLAUDE.local.md` 에 있다
 - `npm test` 는 ADF 변환 스펙을 처음 쓰는 슬라이스에서 Vitest 와 함께 들어온다. 그 전까지는 없다
+- **`forge uninstall` 은 `--non-interactive` 를 안 받는다.** `forge install list` 로 installationId 를
+  받아 `forge uninstall -i <id>` 로 부르면 프롬프트가 없다
+- **설치와 삭제 작업은 서버에서 하나씩 처리되고 20분 넘게 걸릴 수 있다.** 끝나기 전에 다시 보내면
+  `conflicts with another pending or in progress task` 가 난다. 그때는 기다리는 것 말고 할 일이 없다.
+  실패했다고 바로 재시도하면 큐만 더 꼬인다
+- **프롬프트가 필요한 명령은 이 세션에서 못 돌린다.** `!` 를 붙여도 TTY 가 아니다. 별도 터미널을 연다
 
 ## 완료 기준
 
