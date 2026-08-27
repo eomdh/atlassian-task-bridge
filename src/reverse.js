@@ -12,6 +12,13 @@ import { failureCommentAdf } from './lib/failure-comment.js';
 // 이슈 타입에서 untranslatedName 을 쓴 것과 같은 이유다
 const DONE_CATEGORY = 'done';
 
+// 사람이 고칠 수 있는 실패만 알린다. 404 는 회의록을 고치면 되고 403 은 권한을 주면 된다.
+//
+// 처음에는 4xx 전부를 알렸는데 그러면 기능이 스스로 막힌다. 429 로 한 번 댓글이 달리면
+// notifiedAt 이 찍히고, 그 뒤에 진짜 404 가 나도 이미 알렸다고 판단해 영영 안 알린다.
+// 태스크가 없으면 반영이 성공할 일이 없어 플래그도 안 지워진다
+const NOTIFY_STATUS = new Set([403, 404]);
+
 const log = (...parts) => console.log('[reverse]', ...parts);
 
 // 페이로드에 statusCategory 가 들어오는지 문서에 예시가 없다.
@@ -39,7 +46,8 @@ async function resolveStatusCategory(issue) {
  */
 async function notifyFailure(key, mapping, status) {
   if (mapping.notifiedAt) {
-    log('already notified', key, mapping.notifiedAt);
+    // 알린 뒤에 실패 원인이 바뀔 수 있다. 지금 코드를 같이 남겨야 로그 한 줄로 대조된다
+    log('already notified', key, mapping.notifiedAt, 'now', status);
     return;
   }
 
@@ -58,10 +66,18 @@ async function notifyFailure(key, mapping, status) {
       log('comment failed', key, res.status, (await res.text()).slice(0, 300));
       return;
     }
-    await markNotified(key, new Date().toISOString());
     log('comment posted', key);
   } catch (e) {
     log('comment threw', key, String(e));
+    return;
+  }
+
+  // 댓글은 이미 달렸다. 표시를 못 남기면 다음 상태 변경 때 같은 댓글이 한 번 더 붙는다.
+  // 댓글 실패와 같은 catch 에 두면 달린 댓글을 안 달렸다고 기록하게 된다
+  try {
+    await markNotified(key, new Date().toISOString());
+  } catch (e) {
+    log('notified flag write failed', key, String(e));
   }
 }
 
@@ -113,9 +129,9 @@ export async function onIssueUpdated(event) {
 
     if (!res.ok) {
       log('task update failed', mapping.taskId, res.status, (await res.text()).slice(0, 300));
-      // 4xx 는 사람이 회의록을 고치거나 권한을 주면 풀린다. 5xx 와 예외는 다음 상태 변경 때
-      // 다시 시도되므로 알리지 않는다. 할 일이 없는 댓글은 소음이다
-      if (res.status >= 400 && res.status < 500) {
+      // 그 밖의 응답은 다음 상태 변경 때 다시 시도되므로 알리지 않는다.
+      // 할 일이 없는 댓글은 소음이고, 소음이 플래그를 태워 정작 알릴 것을 막는다
+      if (NOTIFY_STATUS.has(res.status)) {
         await notifyFailure(issueKey, mapping, res.status);
       }
       return;
